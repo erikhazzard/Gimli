@@ -53,6 +53,13 @@
         }, false );
 
     } else {
-        alert('Your browser does not support this. Get chrome');
+        instructions.style.display = 'block';
     }
+
+    document.addEventListener("visibilitychange", function() {
+        if(document.visibilityState){ blocker.style.display = 'block'; }
+    });
+    document.addEventListener("blur", function() {
+        if(document.visibilityState){ blocker.style.display = 'block'; }
+    });
 })();

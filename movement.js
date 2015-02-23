@@ -1,7 +1,7 @@
-var sphereShape, sphereBody, world, physicsMaterial, walls=[], balls=[], ballMeshes=[], boxes=[], boxMeshes=[];
+var sphereShape, playerCamera, world, physicsMaterial, walls=[], balls=[], ballMeshes=[], boxes=[], boxMeshes=[];
 
-var camera, scene, renderer;
-var geometry, material, mesh;
+var camera, scene, renderer, stats;
+var geometry, bulletBallMaterial;
 var controls,time = Date.now();
 
 initCannon();
@@ -22,32 +22,35 @@ function initCannon(){
     solver.iterations = 7;
     solver.tolerance = 0.1;
     var split = true;
-    if(split)
+    if(split) { 
         world.solver = new CANNON.SplitSolver(solver);
-    else
+    } else {  
         world.solver = solver;
+    }
 
     world.gravity.set(0,-30,0);
     world.broadphase = new CANNON.NaiveBroadphase();
 
     // Create a slippery material (friction coefficient = 0.0)
     physicsMaterial = new CANNON.Material("slipperyMaterial");
-    var physicsContactMaterial = new CANNON.ContactMaterial(physicsMaterial,
-                                                            physicsMaterial,
-                                                            0.0, // friction coefficient
-                                                            0.3  // restitution
-                                                            );
+    var physicsContactMaterial = new CANNON.ContactMaterial(
+        physicsMaterial,
+        physicsMaterial,
+        0.0, // friction coefficient
+        0.3  // restitution
+    );
+
     // We must add the contact materials to the world
     world.addContactMaterial(physicsContactMaterial);
 
-    // Create a sphere
-    var mass = 5, radius = 1.3;
+    // Create a sphere - the player's camera
+    var mass = 5, radius = 1.1;
     sphereShape = new CANNON.Sphere(radius);
-    sphereBody = new CANNON.Body({ mass: mass });
-    sphereBody.addShape(sphereShape);
-    sphereBody.position.set(0,5,0);
-    sphereBody.linearDamping = 0.9;
-    world.add(sphereBody);
+    playerCamera = new CANNON.Body({ mass: mass });
+    playerCamera.addShape(sphereShape);
+    playerCamera.position.set(0,5,0);
+    playerCamera.linearDamping = 0.93;
+    world.add(playerCamera);
 
     // Create a plane
     var groundShape = new CANNON.Plane();
@@ -58,81 +61,147 @@ function initCannon(){
 }
 
 function init() {
+    // ----------------------------------
+    // Setup Renderer
+    // ----------------------------------
+    renderer = new THREE.WebGLRenderer();
+    renderer.shadowMapEnabled = true;
+    renderer.shadowMapSoft = true;
 
+	renderer.setPixelRatio( window.devicePixelRatio );
+    renderer.setSize( window.innerWidth, window.innerHeight );
+
+    document.body.appendChild( renderer.domElement );
+
+    // ----------------------------------
+    // CAMERA
+    // ----------------------------------
     camera = new THREE.PerspectiveCamera( 75, window.innerWidth / window.innerHeight, 0.1, 1000 );
 
+    // ----------------------------------
+    // SCENE
+    // ----------------------------------
     scene = new THREE.Scene();
-    scene.fog = new THREE.Fog( 0x000000, 0, 500 );
 
-    var ambient = new THREE.AmbientLight( 0xa0a0a0 );
-    scene.add( ambient );
-
+    // ----------------------------------
+    // LIGHTS
+    // ----------------------------------
     if(true){
     light = new THREE.SpotLight( 0xffffff );
-    light.position.set( 10, 30, 20 );
+    light.position.set( 20, 30, 30 );
     light.target.position.set( 0, 0, 0 );
     light.castShadow = true;
 
-    light.shadowCameraNear = 20;
-    light.shadowCameraFar = 50;//camera.far;
-    light.shadowCameraFov = 40;
+    light.shadowCameraNear = 10;
+    light.shadowCameraFar = 70; //camera.far;
+    light.shadowCameraFov = 50;
 
-    light.shadowMapBias = 0.0;
-    light.shadowMapDarkness = 0.7;
-    light.shadowMapWidth = 2*512;
+    light.shadowMapBias = 0.1;
+    light.shadowMapDarkness = 0.6;
+    light.shadowMapWidth = 2*1024;
     light.shadowMapHeight = 2*512;
 
     scene.add( light );
     }
 
-    // LIGHTS
-    var hemiLight = new THREE.HemisphereLight( 0xffffff, 0xffffff, 0.6 );
-    hemiLight.color.setHSL( 0.6, 1, 0.6 );
-    hemiLight.groundColor.setHSL( 0.095, 1, 0.75 );
-    hemiLight.position.set( 0, 500, 0 );
-    scene.add( hemiLight );
+    var light = new THREE.HemisphereLight( 0xf0f0f0, 0xffffff, 1 );
+    light.position.set( - 1, 1, - 1 );
+    scene.add( light );
 
 
 
+    // Skybox
+    // ----------------------------------
+    var cubeMap = new THREE.CubeTexture( [] );
+    cubeMap.format = THREE.RGBFormat;
+    cubeMap.flipY = false;
+    var loader = new THREE.ImageLoader();
+    loader.load( 'img/skyboxsun25degtest.png', function ( image ) {
+        console.log(image);
+        var getSide = function ( x, y ) {
+            var size = 1024;
+            var canvas = document.createElement( 'canvas' );
+            canvas.width = size;
+            canvas.height = size;
+            var context = canvas.getContext( '2d' );
+            context.drawImage( image, - x * size, - y * size );
+            return canvas;
+        };
+        cubeMap.images[ 0 ] = getSide( 2, 1 ); // px
+        cubeMap.images[ 1 ] = getSide( 0, 1 ); // nx
+        cubeMap.images[ 2 ] = getSide( 1, 0 ); // py
+        cubeMap.images[ 3 ] = getSide( 1, 2 ); // ny
+        cubeMap.images[ 4 ] = getSide( 1, 1 ); // pz
+        cubeMap.images[ 5 ] = getSide( 3, 1 ); // nz
+        cubeMap.needsUpdate = true;
+    } );
+
+    var cubeShader = THREE.ShaderLib.cube;
+    cubeShader.uniforms.tCube.value = cubeMap;
+
+    var skyBoxMaterial = new THREE.ShaderMaterial( {
+        fragmentShader: cubeShader.fragmentShader,
+        vertexShader: cubeShader.vertexShader,
+        uniforms: cubeShader.uniforms,
+        depthWrite: false,
+        side: THREE.BackSide
+    });
+
+    var skyBox = new THREE.Mesh(
+        new THREE.BoxGeometry( 300,300,300 ),
+        skyBoxMaterial
+    );
+    scene.add( skyBox );
 
 
-
-
-    controls = new PointerLockControls( camera , sphereBody );
+    // Setup controls
+    // ----------------------------------
+    controls = new PointerLockControls( camera , playerCamera );
     scene.add( controls.getObject() );
 
     // floor
-    geometry = new THREE.PlaneGeometry( 300, 300, 50, 50 );
+    geometry = new THREE.PlaneBufferGeometry( 300, 300, 50, 50 );
     geometry.applyMatrix( new THREE.Matrix4().makeRotationX( - Math.PI / 2 ) );
 
-    material = new THREE.MeshLambertMaterial( { color: 0x336699 } );
+    // ground groundMesh
+    var grassTexture = THREE.ImageUtils.loadTexture( "textures/grass.jpg" );
+    grassTexture.anisotropy = 8;
+    grassTexture.wrapS = grassTexture.wrapT = THREE.RepeatWrapping;
+    grassTexture.repeat.set( 32, 32 );
+    var grassMaterial = new THREE.MeshLambertMaterial({ 
+        shading: THREE.FlatShading,
+        color: 0xddffdd, 
+        map: grassTexture 
+    });
 
-    mesh = new THREE.Mesh( geometry, material );
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    scene.add( mesh );
+    var groundMesh = new THREE.Mesh( geometry, grassMaterial );
+    groundMesh.castShadow = false;
+    groundMesh.receiveShadow = true;
 
-    renderer = new THREE.WebGLRenderer();
-    renderer.shadowMapEnabled = true;
-    renderer.shadowMapSoft = true;
-    renderer.setSize( window.innerWidth, window.innerHeight );
-    renderer.setClearColor( scene.fog.color, 1 );
-
-    document.body.appendChild( renderer.domElement );
-
-    window.addEventListener( 'resize', onWindowResize, false );
+    scene.add( groundMesh );
 
     // Add boxes
-    var halfExtents = new CANNON.Vec3(1,1,1);
+    // ----------------------------------
+    var halfExtents = new CANNON.Vec3(1,0.5,1);
     var boxShape = new CANNON.Box(halfExtents);
     var boxGeometry = new THREE.BoxGeometry(halfExtents.x*2,halfExtents.y*2,halfExtents.z*2);
+
+    var woodTexture = THREE.ImageUtils.loadTexture( "textures/wood.jpg" );
+    woodTexture.wrapS = woodTexture.wrapT = THREE.RepeatWrapping;
+    woodTexture.repeat.set( 1, 1 );
+    var woodMaterial = new THREE.MeshLambertMaterial( { 
+        shading: THREE.FlatShading,
+        color: 0x7F7163, 
+        map: woodTexture 
+    });
+
     for(var i=0; i<7; i++){
         var x = (Math.random()-0.5)*20;
         var y = 1 + (Math.random()-0.5)*1;
         var z = (Math.random()-0.5)*20;
         var boxBody = new CANNON.Body({ mass: 5 });
         boxBody.addShape(boxShape);
-        var boxMesh = new THREE.Mesh( boxGeometry, material );
+        var boxMesh = new THREE.Mesh( boxGeometry, woodMaterial );
         world.add(boxBody);
         scene.add(boxMesh);
         boxBody.position.set(x,y,z);
@@ -143,40 +212,21 @@ function init() {
         boxMeshes.push(boxMesh);
     }
 
+    // SETUP BALL MATERIAL
+    // ----------------------------------
+    bulletBallMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, envMap: cubeMap, refractionRatio: 0.95 } );
 
-    // Add linked boxes
-    var size = 0.5;
-    var he = new CANNON.Vec3(size,size,size*0.1);
-    var boxShape = new CANNON.Box(he);
-    var mass = 0;
-    var space = 0.1 * size;
-    var N = 5, last;
-    var boxGeometry = new THREE.BoxGeometry(he.x*2,he.y*2,he.z*2);
-    for(var i=0; i<N; i++){
-        var boxbody = new CANNON.Body({ mass: mass });
-        boxbody.addShape(boxShape);
-        var boxMesh = new THREE.Mesh(boxGeometry, material);
-        boxbody.position.set(5,(N-i)*(size*2+2*space) + size*2+space,0);
-        boxbody.linearDamping = 0.01;
-        boxbody.angularDamping = 0.01;
-        // boxMesh.castShadow = true;
-        boxMesh.receiveShadow = true;
-        world.add(boxbody);
-        scene.add(boxMesh);
-        boxes.push(boxbody);
-        boxMeshes.push(boxMesh);
 
-        if(i!=0){
-            // Connect this body to the last one
-            var c1 = new CANNON.PointToPointConstraint(boxbody,new CANNON.Vec3(-size,size+space,0),last,new CANNON.Vec3(-size,-size-space,0));
-            var c2 = new CANNON.PointToPointConstraint(boxbody,new CANNON.Vec3(size,size+space,0),last,new CANNON.Vec3(size,-size-space,0));
-            world.addConstraint(c1);
-            world.addConstraint(c2);
-        } else {
-            mass=0.3;
-        }
-        last = boxbody;
-    }
+    // RESIZE
+    // ----------------------------------
+    window.addEventListener( 'resize', onWindowResize, false );
+
+    // STATS
+    // ----------------------------------
+    var container = document.createElement( 'div' );
+	document.body.appendChild( container );
+    stats = new Stats();
+	container.appendChild( stats.domElement );
 }
 
 function onWindowResize() {
@@ -198,7 +248,7 @@ function animate() {
         }
 
         // Update box positions
-        for(var i=0; i<boxes.length; i++){
+        for(i=0; i<boxes.length; i++){
             boxMeshes[i].position.copy(boxes[i].position);
             boxMeshes[i].quaternion.copy(boxes[i].quaternion);
         }
@@ -208,18 +258,27 @@ function animate() {
     renderer.render( scene, camera );
     time = Date.now();
 
+    stats.update();
+
 }
 
+
+// ======================================
+//
+// SHOOT BALLS
+//
+// ======================================
 var ballShape = new CANNON.Sphere(0.2);
 var ballGeometry = new THREE.SphereGeometry(ballShape.radius, 32, 32);
 var shootDirection = new THREE.Vector3();
 var shootVelo = 15;
 var projector = new THREE.Projector();
+
 function getShootDir(targetVec){
     var vector = targetVec;
     targetVec.set(0,0,1);
     projector.unprojectVector(vector, camera);
-    var ray = new THREE.Ray(sphereBody.position, vector.sub(sphereBody.position).normalize() );
+    var ray = new THREE.Ray(playerCamera.position, vector.sub(playerCamera.position).normalize() );
     targetVec.x = ray.direction.x;
     targetVec.y = ray.direction.y;
     targetVec.z = ray.direction.z;
@@ -227,14 +286,16 @@ function getShootDir(targetVec){
 
 window.addEventListener("click",function(e){
     if(controls.enabled==true){
-        var x = sphereBody.position.x;
-        var y = sphereBody.position.y;
-        var z = sphereBody.position.z;
+        var x = playerCamera.position.x;
+        var y = playerCamera.position.y;
+        var z = playerCamera.position.z;
         var ballBody = new CANNON.Body({ mass: 1 });
         ballBody.addShape(ballShape);
-        var ballMesh = new THREE.Mesh( ballGeometry, material );
+
+        var ballMesh = new THREE.Mesh( ballGeometry, bulletBallMaterial );
         world.add(ballBody);
         scene.add(ballMesh);
+
         ballMesh.castShadow = true;
         ballMesh.receiveShadow = true;
         balls.push(ballBody);

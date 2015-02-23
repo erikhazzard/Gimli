@@ -11,6 +11,11 @@
         body { font-family: Khula; margin: 0; padding: 0; overflow: hidden; }
         canvas { width: 100%; height: 100%; }
 
+        #stats { position: absolute; top:0; left: 0 }
+        #stats #fps { background: transparent !important }
+        #stats #fps #fpsText { color: #777 !important }
+        #stats #fps #fpsGraph { display: none }
+
         #ui-info {
             color: #efefef;
             padding: 4px;
@@ -18,7 +23,7 @@
         }
 
         #blocker {
-            background-color: rgba(0,0,0,0.5);
+            background-color: rgba(0,0,0,0.0);
             bottom: 0; left: 0; position: absolute; top: 0; right: 0;
         }
         #instructions {
@@ -27,9 +32,12 @@
             text-align: center;
             color: #f0f0f0;
         }
+        .display-none { display: none; }
     </style>
 </head>
 <body>
+<img class='display-none' src='img/skyboxsun25degtest.png' />
+
 <div id="blocker">
     <div id="instructions">
         <span style="font-size:40px">Click to play</span>
@@ -40,9 +48,70 @@
 
 <div id='ui-info'></div>
 
+<!-- =========================================================
+    SHADERS
+    ========================================================== -->
+<script type="x-shader/x-vertex" id="vertexShader">
+    varying vec3 vWorldPosition;
+    void main() {
+        vec4 worldPosition = modelMatrix * vec4( position, 1.0 );
+        vWorldPosition = worldPosition.xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+    }
+</script>
+<script type="x-shader/x-fragment" id="fragmentShader">
+    uniform vec3 topColor;
+    uniform vec3 bottomColor;
+    uniform float offset;
+    uniform float exponent;
+    varying vec3 vWorldPosition;
+    void main() {
+        float h = normalize( vWorldPosition + offset ).y;
+        gl_FragColor = vec4( mix( bottomColor, topColor, max( pow( max( h, 0.0 ), exponent ), 0.0 ) ), 1.0 );
+    }
+</script>
+
+<script id="vertex-shader-projectile" type="x-shader/x-vertex">
+varying vec2 vUv;
+void main()
+{
+    vUv = uv;
+    vec4 mvPosition = modelViewMatrix * vec4( position, 1.0 );
+    gl_Position = projectionMatrix * mvPosition;
+}
+</script>
+
+<script id="fragment-shader-projectile" type="x-shader/x-fragment">
+    uniform float time;
+    uniform vec2 resolution;
+    uniform sampler2D texture;
+    varying vec2 vUv;
+    void main( void ) {
+        vec2 position = -1.0 + 2.0 * vUv;
+        float a = atan( position.y, position.x );
+        float r = sqrt( dot( position, position ) );
+        vec2 uv;
+        uv.x = cos( a ) / r;
+        uv.y = sin( a ) / r;
+        uv /= 10.0;
+        uv += time * 0.05;
+        vec3 color = texture2D( texture, uv ).rgb;
+        gl_FragColor = vec4( color * r * 1.5, 1.0 );
+    }
+
+</script>
+
+<!-- =========================================================
+
+    SCRIPTS
+
+    ========================================================== -->
 <script src="js/lib/threejs.min.js" charset="utf-8"></script>
 <script src="js/lib/cannon.min.js"></script>
 <script src="js/lib/threejs-projector.js" charset="utf-8"></script>
+<script src="js/lib/threejs-tga.js" charset="utf-8"></script>
+<script src="js/lib/stats.js" charset="utf-8"></script>
+
 
 <script src="js/lib/lodash.min.js" charset="utf-8"></script>
 <script src="js/lib/jquery.min.js" charset="utf-8"></script>
@@ -53,7 +122,9 @@
 <!-- Don't need maybe -->
 <script src="js/lib/microevent.js" charset="utf-8"></script>
 
-<!-- Our scripts -->
+<!-- =========================================================
+    Our scripts 
+    ========================================================== -->
 <script src='get-pointer.js'></script>
 <script src='movement.js'></script>
 
