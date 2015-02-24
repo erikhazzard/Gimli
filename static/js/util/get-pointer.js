@@ -1,20 +1,29 @@
-(function getPointer(){
-    var havePointerLock = 'pointerLockElement' in document || 'mozPointerLockElement' in document || 'webkitPointerLockElement' in document;
-    if ( havePointerLock ) {
-        var instructions = document.getElementById( 'instructions' );
-        var blocker = document.getElementById( 'blocker' );
-        var element = document.body;
+/* ==========================================================================
+ * get-pointer.js
+ * 
+ *  Script to setup pointer / mouse lock. Handles interaction with freeze
+ *  frame BEFORE game begins
+ *
+ * ========================================================================== */
+var events = require('../events');
 
-        var pointerlockchange = function ( event ) {
+module.exports = function getPointer(){
+    var havePointerLock = 'pointerLockElement' in document || 'mozPointerLockElement' in document || 'webkitPointerLockElement' in document;
+    var instructions = document.getElementById( 'instructions' );
+    var blocker = document.getElementById( 'blocker' );
+    var element = document.body;
+
+    if ( havePointerLock ) {
+        var pointerlockchange = function pointerLockChange ( event ) {
             if ( document.pointerLockElement === element || document.mozPointerLockElement === element || document.webkitPointerLockElement === element ) {
-                controls.enabled = true;
+                events.emit('game:controls:enabled', true);
                 blocker.style.display = 'none';
 
             } else {
-                controls.enabled = false;
+                events.emit('game:controls:enabled', false);
                 instructions.style.display = '';
             }
-        }
+        };
 
         var pointerlockerror = function ( event ) {
             instructions.style.display = '';
@@ -36,13 +45,13 @@
             // Ask the browser to lock the pointer
             element.requestPointerLock = element.requestPointerLock || element.mozRequestPointerLock || element.webkitRequestPointerLock;
             if (/Firefox/i.test( navigator.userAgent ) ) {
-                var fullscreenchange = function ( event ) {
+                var fullscreenchange = function fullScreenChange ( event ) {
                     if ( document.fullscreenElement === element || document.mozFullscreenElement === element || document.mozFullScreenElement === element ) {
                         document.removeEventListener( 'fullscreenchange', fullscreenchange );
                         document.removeEventListener( 'mozfullscreenchange', fullscreenchange );
                         element.requestPointerLock();
                     }
-                }
+                };
                 document.addEventListener( 'fullscreenchange', fullscreenchange, false );
                 document.addEventListener( 'mozfullscreenchange', fullscreenchange, false );
                 element.requestFullscreen = element.requestFullscreen || element.mozRequestFullscreen || element.mozRequestFullScreen || element.webkitRequestFullscreen;
@@ -62,4 +71,4 @@
     document.addEventListener("blur", function() {
         if(document.visibilityState){ blocker.style.display = 'block'; }
     });
-})();
+};

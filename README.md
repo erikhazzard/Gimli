@@ -21,3 +21,7 @@ Run `npm start` (or, run `node server.js`)
 
 Physics engine. Used with Three.js for collision detection and world interaction
 
+
+### Resources
+
+* [Blender Scene + Cannon.js](http://dirkk0.github.io/fps0/)

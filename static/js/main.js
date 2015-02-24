@@ -1,9 +1,35 @@
+/* ==========================================================================
+ * main.js
+ * 
+ * Our app's main entry point
+ *
+ * ========================================================================== */
+// Setup getPointer
+var events = require('./events');
+var getPointer = require('./util/get-pointer');
+getPointer();
+
+// =========================================================================
+//
+// Setup Scripts
+//
+// =========================================================================
 var sphereShape, playerCamera, world, physicsMaterial, walls=[], balls=[], ballMeshes=[], boxes=[], boxMeshes=[];
 
 var camera, scene, renderer, stats;
 var geometry, bulletBallMaterial;
 var controls,time = Date.now();
 
+var movingBox;
+
+// EVENTS
+// --------------------------------------
+events.on('game:controls:enabled', function(controlsEnabled){
+    controls.enabled = controlsEnabled;
+});
+
+// SETUP
+// --------------------------------------
 initCannon();
 init();
 animate();
@@ -116,7 +142,7 @@ function init() {
     cubeMap.format = THREE.RGBFormat;
     cubeMap.flipY = false;
     var loader = new THREE.ImageLoader();
-    loader.load( 'img/skyboxsun25degtest.png', function ( image ) {
+    loader.load( '/static/img/skyboxsun25degtest.png', function ( image ) {
         console.log(image);
         var getSide = function ( x, y ) {
             var size = 1024;
@@ -164,7 +190,7 @@ function init() {
     geometry.applyMatrix( new THREE.Matrix4().makeRotationX( - Math.PI / 2 ) );
 
     // ground groundMesh
-    var grassTexture = THREE.ImageUtils.loadTexture( "textures/grass.jpg" );
+    var grassTexture = THREE.ImageUtils.loadTexture( "/static/textures/grass.jpg" );
     grassTexture.anisotropy = 8;
     grassTexture.wrapS = grassTexture.wrapT = THREE.RepeatWrapping;
     grassTexture.repeat.set( 32, 32 );
@@ -186,7 +212,7 @@ function init() {
     var boxShape = new CANNON.Box(halfExtents);
     var boxGeometry = new THREE.BoxGeometry(halfExtents.x*2,halfExtents.y*2,halfExtents.z*2);
 
-    var woodTexture = THREE.ImageUtils.loadTexture( "textures/wood.jpg" );
+    var woodTexture = THREE.ImageUtils.loadTexture( "/static/textures/wood.jpg" );
     woodTexture.wrapS = woodTexture.wrapT = THREE.RepeatWrapping;
     woodTexture.repeat.set( 1, 1 );
     var woodMaterial = new THREE.MeshLambertMaterial( { 
@@ -211,6 +237,28 @@ function init() {
         boxes.push(boxBody);
         boxMeshes.push(boxMesh);
     }
+
+    // Add a randomly moving box
+    // ----------------------------------
+    var x = 10;
+    var y = 10;
+    var z = 10;
+    var boxBody = new CANNON.Body({ mass: 55 });
+
+    var halfExtents = new CANNON.Vec3(3,2.5,3);
+    var boxShape = new CANNON.Box(halfExtents);
+    var boxGeometry = new THREE.BoxGeometry(halfExtents.x*2,halfExtents.y*2,halfExtents.z*2);
+    boxBody.addShape(boxShape);
+
+    var boxMesh = new THREE.Mesh( boxGeometry, woodMaterial );
+    world.add(boxBody);
+    scene.add(boxMesh);
+    boxBody.position.set(x,y,z);
+    boxMesh.position.set(x,y,z);
+    boxMesh.castShadow = true;
+    boxMesh.receiveShadow = true;
+    boxes.push(boxBody);
+    boxMeshes.push(boxMesh);
 
     // SETUP BALL MATERIAL
     // ----------------------------------
@@ -238,6 +286,7 @@ function onWindowResize() {
 var dt = 1/60;
 function animate() {
     requestAnimationFrame( animate );
+        
     if(controls.enabled){
         world.step(dt);
 
@@ -245,6 +294,23 @@ function animate() {
         for(var i=0; i<balls.length; i++){
             ballMeshes[i].position.copy(balls[i].position);
             ballMeshes[i].quaternion.copy(balls[i].quaternion);
+        }
+
+        // DUMMY EXPERIMENT 
+        if(Math.random() < 0.05){
+            //// set random direction
+            //boxes[boxes.length-1].velocity.set(
+                //-20 + Math.random() * 40,
+                //-20 + Math.random() * 40,
+                //-20 + Math.random() * 40
+            //);
+            
+            // Chase player
+            boxes[boxes.length-1].position.set(
+                playerCamera.position.x+5, 
+                playerCamera.position.y+5, 
+                playerCamera.position.z+10
+            );
         }
 
         // Update box positions
@@ -285,7 +351,7 @@ function getShootDir(targetVec){
 }
 
 window.addEventListener("click",function(e){
-    if(controls.enabled==true){
+    if(controls.enabled === true){
         var x = playerCamera.position.x;
         var y = playerCamera.position.y;
         var z = playerCamera.position.z;
