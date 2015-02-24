@@ -3,7 +3,21 @@ Gimli is the place where the survivors of Ragnorak are foretold to dwell. It is 
 
 Gimli is the place where the survivors of the technological Ragnorak occur - after VR becomes mainstream and we're so connected to technology that we're no longer connected to people. Gimli is a virtual space to connect with people.
 
+# 1. Installation
+First, setup required external dependencies:
+    * MongoDB
+    * Redis
 
 
-## Cannon.js
+Second, install package dependencies by running:
+    * Run `npm install -d` in this root folder.
+
+# 2. Usage
+Run `npm start` (or, run `node server.js`)
+
+
+## Tech Used
+* Cannon.js *
+
 Physics engine. Used with Three.js for collision detection and world interaction
+
