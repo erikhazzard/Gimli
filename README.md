@@ -15,6 +15,12 @@ Second, install package dependencies by running:
 # 2. Usage
 Run `npm start` (or, run `node server.js`)
 
+# 3. Developing
+This project uses Browserify. A gulpfile is included to automate building. When developing, run either:
+
+`gulp` or `make` to kick off gulp.
+
+
 
 ## Tech Used
 * Cannon.js *
