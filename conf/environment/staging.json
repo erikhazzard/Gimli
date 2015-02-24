@@ -1,0 +1,15 @@
+{
+    "app": {
+        "port": 9000,
+        "portHttps": 9443,
+        "apiUrl": "localhost"
+    },
+    "database": {
+        "db": "mongodb://localhost/gilmi"
+    },
+    "s3": {
+        "key": "",
+        "secret": "",
+        "bucket": ""
+    }
+}

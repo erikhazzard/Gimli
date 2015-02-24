@@ -1,0 +1,9 @@
+{
+  "name": "WebGL-Experiments",
+  "author": "Erik Hazzard <enoex1@gmail.com>",
+  "dependencies": {
+    "bragi": "0.0.22",
+    "bragi-browser": "0.0.9",
+    "browserify": "^9.0.3"
+  }
+}

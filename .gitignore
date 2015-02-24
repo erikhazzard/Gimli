@@ -1,0 +1,8 @@
+node_modules
+.DS_Store
+.sass-cache
+*.swp
+dump.rdb
+
+node_modules
+npm-debug.log
