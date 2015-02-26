@@ -4,6 +4,9 @@
  * Our app's main entry point
  *
  * ========================================================================== */
+var logger = require('bragi-browser');
+
+
 // Setup getPointer
 var events = require('./events');
 var getPointer = require('./util/get-pointer');
@@ -21,18 +24,28 @@ var geometry, bulletBallMaterial;
 var controls,time = Date.now();
 
 var movingBox;
+var gameIsRunning = false;
 
 // EVENTS
 // --------------------------------------
 events.on('game:controls:enabled', function(controlsEnabled){
+    logger.log('EVENTS:main:game:controls:enabled', 
+    'controls enabled: ' + controlsEnabled);
+
     controls.enabled = controlsEnabled;
+
+    // The very first time the controls are enabled, start the game
+    if(!gameIsRunning){
+        runGameLoop();
+        gameIsRunning = true;
+    }
+
 });
 
 // SETUP
 // --------------------------------------
 initCannon();
 init();
-animate();
 
 function initCannon(){
     // Setup our world
@@ -45,7 +58,7 @@ function initCannon(){
     world.defaultContactMaterial.contactEquationStiffness = 1e9;
     world.defaultContactMaterial.contactEquationRelaxation = 4;
 
-    solver.iterations = 7;
+    solver.iterations = 6;
     solver.tolerance = 0.1;
     var split = true;
     if(split) { 
@@ -112,7 +125,6 @@ function init() {
     // ----------------------------------
     // LIGHTS
     // ----------------------------------
-    if(true){
     light = new THREE.SpotLight( 0xffffff );
     light.position.set( 20, 30, 30 );
     light.target.position.set( 0, 0, 0 );
@@ -128,11 +140,10 @@ function init() {
     light.shadowMapHeight = 2*512;
 
     scene.add( light );
-    }
 
-    var light = new THREE.HemisphereLight( 0xf0f0f0, 0xffffff, 1 );
-    light.position.set( - 1, 1, - 1 );
-    scene.add( light );
+    var hemiLight = new THREE.HemisphereLight( 0xf0f0f0, 0xffffff, 1 );
+    hemiLight.position.set( - 1, 1, - 1 );
+    scene.add( hemiLight );
 
 
 
@@ -179,17 +190,12 @@ function init() {
     );
     scene.add( skyBox );
 
-
-    // Setup controls
+    // ground groundMesh
     // ----------------------------------
-    controls = new PointerLockControls( camera , playerCamera );
-    scene.add( controls.getObject() );
-
     // floor
     geometry = new THREE.PlaneBufferGeometry( 300, 300, 50, 50 );
     geometry.applyMatrix( new THREE.Matrix4().makeRotationX( - Math.PI / 2 ) );
 
-    // ground groundMesh
     var grassTexture = THREE.ImageUtils.loadTexture( "/static/textures/grass.jpg" );
     grassTexture.anisotropy = 8;
     grassTexture.wrapS = grassTexture.wrapT = THREE.RepeatWrapping;
@@ -238,31 +244,14 @@ function init() {
         boxMeshes.push(boxMesh);
     }
 
-    // Add a randomly moving box
-    // ----------------------------------
-    var x = 10;
-    var y = 10;
-    var z = 10;
-    var boxBody = new CANNON.Body({ mass: 55 });
-
-    var halfExtents = new CANNON.Vec3(3,2.5,3);
-    var boxShape = new CANNON.Box(halfExtents);
-    var boxGeometry = new THREE.BoxGeometry(halfExtents.x*2,halfExtents.y*2,halfExtents.z*2);
-    boxBody.addShape(boxShape);
-
-    var boxMesh = new THREE.Mesh( boxGeometry, woodMaterial );
-    world.add(boxBody);
-    scene.add(boxMesh);
-    boxBody.position.set(x,y,z);
-    boxMesh.position.set(x,y,z);
-    boxMesh.castShadow = true;
-    boxMesh.receiveShadow = true;
-    boxes.push(boxBody);
-    boxMeshes.push(boxMesh);
-
     // SETUP BALL MATERIAL
     // ----------------------------------
     bulletBallMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, envMap: cubeMap, refractionRatio: 0.95 } );
+
+    // Setup controls
+    // ----------------------------------
+    controls = new PointerLockControls( camera , playerCamera );
+    scene.add( controls.getObject() );
 
 
     // RESIZE
@@ -283,99 +272,38 @@ function onWindowResize() {
     renderer.setSize( window.innerWidth, window.innerHeight );
 }
 
+// ======================================
+//
+// Game Loop
+//
+// ======================================
 var dt = 1/60;
-function animate() {
-    requestAnimationFrame( animate );
-        
-    if(controls.enabled){
-        world.step(dt);
+function runGameLoop() {
+    // PHYSICS
+    // ----------------------------------
+    // updates world
+    world.step(dt);
 
-        // Update ball positions
-        for(var i=0; i<balls.length; i++){
-            ballMeshes[i].position.copy(balls[i].position);
-            ballMeshes[i].quaternion.copy(balls[i].quaternion);
-        }
-
-        // DUMMY EXPERIMENT 
-        if(Math.random() < 0.05){
-            //// set random direction
-            //boxes[boxes.length-1].velocity.set(
-                //-20 + Math.random() * 40,
-                //-20 + Math.random() * 40,
-                //-20 + Math.random() * 40
-            //);
-            
-            // Chase player
-            boxes[boxes.length-1].position.set(
-                playerCamera.position.x+5, 
-                playerCamera.position.y+5, 
-                playerCamera.position.z+10
-            );
-        }
-
-        // Update box positions
-        for(i=0; i<boxes.length; i++){
-            boxMeshes[i].position.copy(boxes[i].position);
-            boxMeshes[i].quaternion.copy(boxes[i].quaternion);
-        }
+    // Update box positions
+    for(i=0; i<boxes.length; i++){
+        boxMeshes[i].position.copy(boxes[i].position);
+        boxMeshes[i].quaternion.copy(boxes[i].quaternion);
     }
 
+    // Updates controls
     controls.update( Date.now() - time );
+    
+    // RENDER
+    // ----------------------------------
+    // renders scene
     renderer.render( scene, camera );
+
+    // sets time
     time = Date.now();
 
+    // updates FPS stats
     stats.update();
 
+    // Call loop
+    requestAnimationFrame( runGameLoop );
 }
-
-
-// ======================================
-//
-// SHOOT BALLS
-//
-// ======================================
-var ballShape = new CANNON.Sphere(0.2);
-var ballGeometry = new THREE.SphereGeometry(ballShape.radius, 32, 32);
-var shootDirection = new THREE.Vector3();
-var shootVelo = 15;
-var projector = new THREE.Projector();
-
-function getShootDir(targetVec){
-    var vector = targetVec;
-    targetVec.set(0,0,1);
-    projector.unprojectVector(vector, camera);
-    var ray = new THREE.Ray(playerCamera.position, vector.sub(playerCamera.position).normalize() );
-    targetVec.x = ray.direction.x;
-    targetVec.y = ray.direction.y;
-    targetVec.z = ray.direction.z;
-}
-
-window.addEventListener("click",function(e){
-    if(controls.enabled === true){
-        var x = playerCamera.position.x;
-        var y = playerCamera.position.y;
-        var z = playerCamera.position.z;
-        var ballBody = new CANNON.Body({ mass: 1 });
-        ballBody.addShape(ballShape);
-
-        var ballMesh = new THREE.Mesh( ballGeometry, bulletBallMaterial );
-        world.add(ballBody);
-        scene.add(ballMesh);
-
-        ballMesh.castShadow = true;
-        ballMesh.receiveShadow = true;
-        balls.push(ballBody);
-        ballMeshes.push(ballMesh);
-        getShootDir(shootDirection);
-        ballBody.velocity.set(  shootDirection.x * shootVelo,
-                                shootDirection.y * shootVelo,
-                                shootDirection.z * shootVelo);
-
-        // Move the ball outside the player sphere
-        x += shootDirection.x * (sphereShape.radius*1.02 + ballShape.radius);
-        y += shootDirection.y * (sphereShape.radius*1.02 + ballShape.radius);
-        z += shootDirection.z * (sphereShape.radius*1.02 + ballShape.radius);
-        ballBody.position.set(x,y,z);
-        ballMesh.position.set(x,y,z);
-    }
-});
