@@ -372,16 +372,16 @@ var lastMovementTimeout;
 document.addEventListener( 'keydown', function(event){
 
     // TODO: FOR DEV, SEND EVENT WHEN KEYDOWN
-    if(Date.now() - lastMovementEventEmitted > 50){
+    if(Date.now() - lastMovementEventEmitted > 40){
+        // let listeners know we're moving
         events.emit('self:game:player:movement', {
             id: PLAYER_ID,
             position: playerCamera.position
         });
         lastMovementEventEmitted = Date.now();
 
-        if(lastMovementTimeout){ clearTimeout( lastMovementTimeout ); }
-
         // try to send again after a short while
+        if(lastMovementTimeout){ clearTimeout( lastMovementTimeout ); }
         lastMovementTimeout = setTimeout(function(){
             if(Date.now() - lastMovementEventEmitted > 50){
                 events.emit('self:game:player:movement', {
@@ -390,7 +390,7 @@ document.addEventListener( 'keydown', function(event){
                 });
             lastMovementEventEmitted = Date.now();
             }
-        }, 300);
+        }, 500);
         
     }
 }, false );
