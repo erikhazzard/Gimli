@@ -5,10 +5,31 @@
  *
  * ========================================================================== */
 var logger = require('bragi-browser');
+var uuid = require('uuid');
+var events = require('./events');
+
+// Main socketIO / server communication stuff
+// --------------------------------------
+var setupSocketIO = require('./socket-io');
+
+// Dev stuff
+// --------------------------------------
+var devInput = require('./dev-input')();
+
+// TODO: GET ID FROM SERVER
+var PLAYER_ID = uuid.v4();
+
+
+// Utility for creating bodies and meshes
+// --------------------------------------
+var createBodyAndMesh = require('./create-body-and-mesh');
 
 
 // Setup getPointer
-var events = require('./events');
+// --------------------------------------
+var PointerLockControls = require('./util/pointer-lock-controls');
+
+// API for pointer control
 var getPointer = require('./util/get-pointer');
 getPointer();
 
@@ -20,7 +41,7 @@ getPointer();
 var sphereShape, playerCamera, world, physicsMaterial, walls=[], balls=[], ballMeshes=[], boxes=[], boxMeshes=[];
 
 var camera, scene, renderer, stats;
-var geometry, bulletBallMaterial;
+var geometry; 
 var controls,time = Date.now();
 
 var movingBox;
@@ -58,8 +79,9 @@ function initCannon(){
     world.defaultContactMaterial.contactEquationStiffness = 1e9;
     world.defaultContactMaterial.contactEquationRelaxation = 4;
 
-    solver.iterations = 6;
+    solver.iterations = 7;
     solver.tolerance = 0.1;
+
     var split = true;
     if(split) { 
         world.solver = new CANNON.SplitSolver(solver);
@@ -67,36 +89,45 @@ function initCannon(){
         world.solver = solver;
     }
 
-    world.gravity.set(0,-30,0);
+    world.gravity.set(0,-40,0);
     world.broadphase = new CANNON.NaiveBroadphase();
 
     // Create a slippery material (friction coefficient = 0.0)
     physicsMaterial = new CANNON.Material("slipperyMaterial");
     var physicsContactMaterial = new CANNON.ContactMaterial(
         physicsMaterial,
-        physicsMaterial,
-        0.0, // friction coefficient
-        0.3  // restitution
-    );
+        physicsMaterial, {
+            friction: 1.0, // friction coefficient
+            restitution: 0.1  // restitution
+    });
 
     // We must add the contact materials to the world
     world.addContactMaterial(physicsContactMaterial);
 
     // Create a sphere - the player's camera
-    var mass = 5, radius = 1.1;
-    sphereShape = new CANNON.Sphere(radius);
-    playerCamera = new CANNON.Body({ mass: mass });
+    sphereShape = new CANNON.Sphere(1);
+    playerCamera = new CANNON.Body({ mass: 5 });
     playerCamera.addShape(sphereShape);
-    playerCamera.position.set(0,5,0);
-    playerCamera.linearDamping = 0.93;
+    playerCamera.position.set(5,1,5);
+    playerCamera.linearDamping = 0.95;
     world.add(playerCamera);
 
+    // ----------------------------------
     // Create a plane
+    // ----------------------------------
     var groundShape = new CANNON.Plane();
     var groundBody = new CANNON.Body({ mass: 0 });
+
     groundBody.addShape(groundShape);
     groundBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1,0,0),-Math.PI/2);
     world.add(groundBody);
+
+    // ----------------------------------
+    // SETUP SOCKET CONNECTION
+    // ----------------------------------
+    // TODO: GET ID FROM SERVER
+    setupSocketIO( PLAYER_ID, {position: playerCamera.position});
+
 }
 
 function init() {
@@ -144,8 +175,6 @@ function init() {
     var hemiLight = new THREE.HemisphereLight( 0xf0f0f0, 0xffffff, 1 );
     hemiLight.position.set( - 1, 1, - 1 );
     scene.add( hemiLight );
-
-
 
     // Skybox
     // ----------------------------------
@@ -214,45 +243,25 @@ function init() {
 
     // Add boxes
     // ----------------------------------
-    var halfExtents = new CANNON.Vec3(1,0.5,1);
-    var boxShape = new CANNON.Box(halfExtents);
-    var boxGeometry = new THREE.BoxGeometry(halfExtents.x*2,halfExtents.y*2,halfExtents.z*2);
-
-    var woodTexture = THREE.ImageUtils.loadTexture( "/static/textures/wood.jpg" );
-    woodTexture.wrapS = woodTexture.wrapT = THREE.RepeatWrapping;
-    woodTexture.repeat.set( 1, 1 );
-    var woodMaterial = new THREE.MeshLambertMaterial( { 
-        shading: THREE.FlatShading,
-        color: 0x7F7163, 
-        map: woodTexture 
+    if(false){ // DONT ADD FOR NOW
+    _.each(_.range(10), function(){ 
+        var boxObj = createBodyAndMesh.createBox({ 
+            x: (Math.random()-0.5)*20,
+            y: 1 + (Math.random()-0.5)*1,
+            z: (Math.random()-0.5)*20
+        });
+        world.add(boxObj.body);
+        scene.add(boxObj.mesh);
+        boxes.push(boxObj.body);
+        boxMeshes.push(boxObj.mesh);
     });
-
-    for(var i=0; i<7; i++){
-        var x = (Math.random()-0.5)*20;
-        var y = 1 + (Math.random()-0.5)*1;
-        var z = (Math.random()-0.5)*20;
-        var boxBody = new CANNON.Body({ mass: 5 });
-        boxBody.addShape(boxShape);
-        var boxMesh = new THREE.Mesh( boxGeometry, woodMaterial );
-        world.add(boxBody);
-        scene.add(boxMesh);
-        boxBody.position.set(x,y,z);
-        boxMesh.position.set(x,y,z);
-        boxMesh.castShadow = true;
-        boxMesh.receiveShadow = true;
-        boxes.push(boxBody);
-        boxMeshes.push(boxMesh);
     }
 
-    // SETUP BALL MATERIAL
-    // ----------------------------------
-    bulletBallMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, envMap: cubeMap, refractionRatio: 0.95 } );
 
     // Setup controls
     // ----------------------------------
     controls = new PointerLockControls( camera , playerCamera );
     scene.add( controls.getObject() );
-
 
     // RESIZE
     // ----------------------------------
@@ -274,10 +283,125 @@ function onWindowResize() {
 
 // ======================================
 //
+// Respond to player creations
+//
+// ======================================
+var playerBodies = {}; // id: player object
+var playerMeshes = {}; // id: player object
+
+// --------------------------------------
+// Listen for server updates
+// --------------------------------------
+events.on('game:player:add', function(options){
+    options = options || {};
+
+    var playerObj = createBodyAndMesh.createPlayer({ 
+        x: options.x || (Math.random()-0.5)*20,
+        y: options.y || 1 + (Math.random()-0.5)*1,
+        z: options.z || (Math.random()-0.5)*20
+    });
+    var id = options.id || PLAYER_ID;
+
+    world.add(playerObj.body);
+    scene.add(playerObj.mesh);
+
+    playerBodies[id] = playerObj.body;
+    playerMeshes[id] = playerObj.mesh;
+
+    logger.log('game:events:game:player:add', 
+    'called | id : ' + id + ' | options: %O', 
+    options);
+});
+
+events.on('game:player:disconnected', function(options){
+    // Called when another client disconnects
+    //
+    //      id: target player ID
+    //      position: new position in { x:_, y:_, z:_ }
+    
+    options = options || {};
+
+    var id = options.id;
+    var position = options.position;
+
+    if(!playerBodies[id]){ 
+        logger.log('warn:game:events:game:player:disconnected', 
+        'no player bodies object found : ' + id);
+        return; 
+    }
+    
+    // TODO: Make sure this works
+    world.remove(playerBodies[id]);
+    scene.remove(playerMeshes[id]);
+
+    delete playerBodies[id];
+    delete playerMeshes[id];
+
+    logger.log('game:events:game:player:disconnected', 'called : %O', options);
+});
+
+events.on('game:player:movement', function(options){
+    // Called when client receives data from server.
+    // options object will be formatted like:
+    //
+    //      id: target player ID
+    //      position: new position in { x:_, y:_, z:_ }
+    
+    options = options || {};
+
+    var id = options.id;
+    var position = options.position;
+
+    if(!playerBodies[id]){ 
+        logger.log('warn:game:events:game:player:move', 
+        'no player bodies object found');
+        return; 
+    }
+    
+    playerBodies[id].position.set(position.x, position.y, position.z);
+    playerMeshes[id].position.set(position.x, position.y, position.z);
+
+    logger.log('game:events:game:player:movemovement', 'called : %O', options);
+});
+
+
+// TODO: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX REMOVE
+var lastMovementEventEmitted = Date.now();
+var lastMovementTimeout;
+
+document.addEventListener( 'keydown', function(event){
+
+    // TODO: FOR DEV, SEND EVENT WHEN KEYDOWN
+    if(Date.now() - lastMovementEventEmitted > 50){
+        events.emit('self:game:player:movement', {
+            id: PLAYER_ID,
+            position: playerCamera.position
+        });
+        lastMovementEventEmitted = Date.now();
+
+        if(lastMovementTimeout){ clearTimeout( lastMovementTimeout ); }
+
+        // try to send again after a short while
+        lastMovementTimeout = setTimeout(function(){
+            if(Date.now() - lastMovementEventEmitted > 50){
+                events.emit('self:game:player:movement', {
+                    id: PLAYER_ID,
+                    position: playerCamera.position
+                });
+            lastMovementEventEmitted = Date.now();
+            }
+        }, 300);
+        
+    }
+}, false );
+
+// ======================================
+//
 // Game Loop
 //
 // ======================================
 var dt = 1/60;
+
 function runGameLoop() {
     // PHYSICS
     // ----------------------------------
@@ -285,9 +409,15 @@ function runGameLoop() {
     world.step(dt);
 
     // Update box positions
-    for(i=0; i<boxes.length; i++){
+    for(var i=boxes.length-1; i>=0; i--){
         boxMeshes[i].position.copy(boxes[i].position);
         boxMeshes[i].quaternion.copy(boxes[i].quaternion);
+    }
+
+    // update players
+    for(var key in playerBodies){
+        playerMeshes[key].position.copy(playerBodies[key].position);
+        playerMeshes[key].quaternion.copy(playerBodies[key].quaternion);
     }
 
     // Updates controls

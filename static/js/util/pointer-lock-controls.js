@@ -1,12 +1,37 @@
-/**
- * @author mrdoob / http://mrdoob.com/
- * @author schteppe / https://github.com/schteppe
- */
- var PointerLockControls = function ( camera, cannonBody ) {
+// ======================================
+//
+// Player controller settings
+//
+// ======================================
+var logger = require('bragi-browser'); 
+var events = require('../events');
 
-    var eyeYPos = 2; // eyes are 2 meters above the ground
-    var velocityFactor = 0.2;
-    var jumpVelocity = 20;
+// ======================================
+// Pointer lock controls
+// ======================================
+var PointerLockControls = function ( camera, cannonBody, options ) {
+    options = options || {};
+    
+    // BASE options
+    options.eyeYPos = options.eyeYPos || 3;
+    options.velocityFactor = options.velocityFactor || 0.2;
+    options.jumpVelocity = options.jumpVelocity || 20;
+
+    var base_eyeYPos = options.eyeYPos;
+    var base_velocityFactor = options.velocityFactor;
+    var base_jumpVelocity = options.jumpVelocity;
+
+    var eyeYPos = options.eyeYPos;
+    var velocityFactor = options.velocityFactor;
+    var jumpVelocity = options.jumpVelocity;
+
+    // Listen for event to change player speed
+    events.on('playerControls:updateOptions', function(newOptions){
+        eyeYPos = newOptions.eyeYPos || eyeYPos;
+        velocityFactor = newOptions.velocityFactor || velocityFactor;
+        jumpVelocity = newOptions.jumpVelocity || jumpVelocity;
+    });
+
     var scope = this;
 
     var pitchObject = new THREE.Object3D();
@@ -60,8 +85,14 @@
     };
 
     var onKeyDown = function ( event ) {
+        logger.log('pointer-lock-controls:keydown', 
+            'key down pressed keycode: ' + event.keyCode);
 
         switch ( event.keyCode ) {
+            case 16:
+                // Shift
+                velocityFactor = 0.7;
+                break;
 
             case 38: // up
             case 87: // w
@@ -93,8 +124,14 @@
     };
 
     var onKeyUp = function ( event ) {
+        logger.log('pointer-lock-controls:keyup', 
+            'key up pressed keycode: ' + event.keyCode);
 
         switch( event.keyCode ) {
+            case 16:
+                // Shift
+                velocityFactor = base_velocityFactor;
+                break;
 
             case 38: // up
             case 87: // w
@@ -115,7 +152,6 @@
             case 68: // d
                 moveRight = false;
                 break;
-
         }
 
     };
@@ -133,7 +169,7 @@
     this.getDirection = function(targetVec){
         targetVec.set(0,0,-1);
         quat.multiplyVector3(targetVec);
-    }
+    };
 
     // Moves the camera to the Cannon.js object position and adds velocity to the object if the run key is down
     var inputVelocity = new THREE.Vector3();
@@ -176,3 +212,5 @@
     };
 };
 THREE.PointerLockControls = PointerLockControls;
+
+module.exports = PointerLockControls;

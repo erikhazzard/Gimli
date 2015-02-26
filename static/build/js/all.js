@@ -6,10 +6,31 @@
  *
  * ========================================================================== */
 var logger = require('bragi-browser');
+var uuid = require('uuid');
+var events = require('./events');
+
+// Main socketIO / server communication stuff
+// --------------------------------------
+var setupSocketIO = require('./socket-io');
+
+// Dev stuff
+// --------------------------------------
+var devInput = require('./dev-input')();
+
+// TODO: GET ID FROM SERVER
+var PLAYER_ID = uuid.v4();
+
+
+// Utility for creating bodies and meshes
+// --------------------------------------
+var createBodyAndMesh = require('./create-body-and-mesh');
 
 
 // Setup getPointer
-var events = require('./events');
+// --------------------------------------
+var PointerLockControls = require('./util/pointer-lock-controls');
+
+// API for pointer control
 var getPointer = require('./util/get-pointer');
 getPointer();
 
@@ -21,7 +42,7 @@ getPointer();
 var sphereShape, playerCamera, world, physicsMaterial, walls=[], balls=[], ballMeshes=[], boxes=[], boxMeshes=[];
 
 var camera, scene, renderer, stats;
-var geometry, bulletBallMaterial;
+var geometry; 
 var controls,time = Date.now();
 
 var movingBox;
@@ -59,8 +80,9 @@ function initCannon(){
     world.defaultContactMaterial.contactEquationStiffness = 1e9;
     world.defaultContactMaterial.contactEquationRelaxation = 4;
 
-    solver.iterations = 6;
+    solver.iterations = 7;
     solver.tolerance = 0.1;
+
     var split = true;
     if(split) { 
         world.solver = new CANNON.SplitSolver(solver);
@@ -68,36 +90,45 @@ function initCannon(){
         world.solver = solver;
     }
 
-    world.gravity.set(0,-30,0);
+    world.gravity.set(0,-40,0);
     world.broadphase = new CANNON.NaiveBroadphase();
 
     // Create a slippery material (friction coefficient = 0.0)
     physicsMaterial = new CANNON.Material("slipperyMaterial");
     var physicsContactMaterial = new CANNON.ContactMaterial(
         physicsMaterial,
-        physicsMaterial,
-        0.0, // friction coefficient
-        0.3  // restitution
-    );
+        physicsMaterial, {
+            friction: 1.0, // friction coefficient
+            restitution: 0.1  // restitution
+    });
 
     // We must add the contact materials to the world
     world.addContactMaterial(physicsContactMaterial);
 
     // Create a sphere - the player's camera
-    var mass = 5, radius = 1.1;
-    sphereShape = new CANNON.Sphere(radius);
-    playerCamera = new CANNON.Body({ mass: mass });
+    sphereShape = new CANNON.Sphere(1);
+    playerCamera = new CANNON.Body({ mass: 5 });
     playerCamera.addShape(sphereShape);
-    playerCamera.position.set(0,5,0);
-    playerCamera.linearDamping = 0.93;
+    playerCamera.position.set(5,1,5);
+    playerCamera.linearDamping = 0.95;
     world.add(playerCamera);
 
+    // ----------------------------------
     // Create a plane
+    // ----------------------------------
     var groundShape = new CANNON.Plane();
     var groundBody = new CANNON.Body({ mass: 0 });
+
     groundBody.addShape(groundShape);
     groundBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1,0,0),-Math.PI/2);
     world.add(groundBody);
+
+    // ----------------------------------
+    // SETUP SOCKET CONNECTION
+    // ----------------------------------
+    // TODO: GET ID FROM SERVER
+    setupSocketIO( PLAYER_ID, {position: playerCamera.position});
+
 }
 
 function init() {
@@ -145,8 +176,6 @@ function init() {
     var hemiLight = new THREE.HemisphereLight( 0xf0f0f0, 0xffffff, 1 );
     hemiLight.position.set( - 1, 1, - 1 );
     scene.add( hemiLight );
-
-
 
     // Skybox
     // ----------------------------------
@@ -215,45 +244,25 @@ function init() {
 
     // Add boxes
     // ----------------------------------
-    var halfExtents = new CANNON.Vec3(1,0.5,1);
-    var boxShape = new CANNON.Box(halfExtents);
-    var boxGeometry = new THREE.BoxGeometry(halfExtents.x*2,halfExtents.y*2,halfExtents.z*2);
-
-    var woodTexture = THREE.ImageUtils.loadTexture( "/static/textures/wood.jpg" );
-    woodTexture.wrapS = woodTexture.wrapT = THREE.RepeatWrapping;
-    woodTexture.repeat.set( 1, 1 );
-    var woodMaterial = new THREE.MeshLambertMaterial( { 
-        shading: THREE.FlatShading,
-        color: 0x7F7163, 
-        map: woodTexture 
+    if(false){ // DONT ADD FOR NOW
+    _.each(_.range(10), function(){ 
+        var boxObj = createBodyAndMesh.createBox({ 
+            x: (Math.random()-0.5)*20,
+            y: 1 + (Math.random()-0.5)*1,
+            z: (Math.random()-0.5)*20
+        });
+        world.add(boxObj.body);
+        scene.add(boxObj.mesh);
+        boxes.push(boxObj.body);
+        boxMeshes.push(boxObj.mesh);
     });
-
-    for(var i=0; i<7; i++){
-        var x = (Math.random()-0.5)*20;
-        var y = 1 + (Math.random()-0.5)*1;
-        var z = (Math.random()-0.5)*20;
-        var boxBody = new CANNON.Body({ mass: 5 });
-        boxBody.addShape(boxShape);
-        var boxMesh = new THREE.Mesh( boxGeometry, woodMaterial );
-        world.add(boxBody);
-        scene.add(boxMesh);
-        boxBody.position.set(x,y,z);
-        boxMesh.position.set(x,y,z);
-        boxMesh.castShadow = true;
-        boxMesh.receiveShadow = true;
-        boxes.push(boxBody);
-        boxMeshes.push(boxMesh);
     }
 
-    // SETUP BALL MATERIAL
-    // ----------------------------------
-    bulletBallMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, envMap: cubeMap, refractionRatio: 0.95 } );
 
     // Setup controls
     // ----------------------------------
     controls = new PointerLockControls( camera , playerCamera );
     scene.add( controls.getObject() );
-
 
     // RESIZE
     // ----------------------------------
@@ -275,10 +284,125 @@ function onWindowResize() {
 
 // ======================================
 //
+// Respond to player creations
+//
+// ======================================
+var playerBodies = {}; // id: player object
+var playerMeshes = {}; // id: player object
+
+// --------------------------------------
+// Listen for server updates
+// --------------------------------------
+events.on('game:player:add', function(options){
+    options = options || {};
+
+    var playerObj = createBodyAndMesh.createPlayer({ 
+        x: options.x || (Math.random()-0.5)*20,
+        y: options.y || 1 + (Math.random()-0.5)*1,
+        z: options.z || (Math.random()-0.5)*20
+    });
+    var id = options.id || PLAYER_ID;
+
+    world.add(playerObj.body);
+    scene.add(playerObj.mesh);
+
+    playerBodies[id] = playerObj.body;
+    playerMeshes[id] = playerObj.mesh;
+
+    logger.log('game:events:game:player:add', 
+    'called | id : ' + id + ' | options: %O', 
+    options);
+});
+
+events.on('game:player:disconnected', function(options){
+    // Called when another client disconnects
+    //
+    //      id: target player ID
+    //      position: new position in { x:_, y:_, z:_ }
+    
+    options = options || {};
+
+    var id = options.id;
+    var position = options.position;
+
+    if(!playerBodies[id]){ 
+        logger.log('warn:game:events:game:player:disconnected', 
+        'no player bodies object found : ' + id);
+        return; 
+    }
+    
+    // TODO: Make sure this works
+    world.remove(playerBodies[id]);
+    scene.remove(playerMeshes[id]);
+
+    delete playerBodies[id];
+    delete playerMeshes[id];
+
+    logger.log('game:events:game:player:disconnected', 'called : %O', options);
+});
+
+events.on('game:player:movement', function(options){
+    // Called when client receives data from server.
+    // options object will be formatted like:
+    //
+    //      id: target player ID
+    //      position: new position in { x:_, y:_, z:_ }
+    
+    options = options || {};
+
+    var id = options.id;
+    var position = options.position;
+
+    if(!playerBodies[id]){ 
+        logger.log('warn:game:events:game:player:move', 
+        'no player bodies object found');
+        return; 
+    }
+    
+    playerBodies[id].position.set(position.x, position.y, position.z);
+    playerMeshes[id].position.set(position.x, position.y, position.z);
+
+    logger.log('game:events:game:player:movemovement', 'called : %O', options);
+});
+
+
+// TODO: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX REMOVE
+var lastMovementEventEmitted = Date.now();
+var lastMovementTimeout;
+
+document.addEventListener( 'keydown', function(event){
+
+    // TODO: FOR DEV, SEND EVENT WHEN KEYDOWN
+    if(Date.now() - lastMovementEventEmitted > 50){
+        events.emit('self:game:player:movement', {
+            id: PLAYER_ID,
+            position: playerCamera.position
+        });
+        lastMovementEventEmitted = Date.now();
+
+        if(lastMovementTimeout){ clearTimeout( lastMovementTimeout ); }
+
+        // try to send again after a short while
+        lastMovementTimeout = setTimeout(function(){
+            if(Date.now() - lastMovementEventEmitted > 50){
+                events.emit('self:game:player:movement', {
+                    id: PLAYER_ID,
+                    position: playerCamera.position
+                });
+            lastMovementEventEmitted = Date.now();
+            }
+        }, 300);
+        
+    }
+}, false );
+
+// ======================================
+//
 // Game Loop
 //
 // ======================================
 var dt = 1/60;
+
 function runGameLoop() {
     // PHYSICS
     // ----------------------------------
@@ -286,9 +410,15 @@ function runGameLoop() {
     world.step(dt);
 
     // Update box positions
-    for(i=0; i<boxes.length; i++){
+    for(var i=boxes.length-1; i>=0; i--){
         boxMeshes[i].position.copy(boxes[i].position);
         boxMeshes[i].quaternion.copy(boxes[i].quaternion);
+    }
+
+    // update players
+    for(var key in playerBodies){
+        playerMeshes[key].position.copy(playerBodies[key].position);
+        playerMeshes[key].quaternion.copy(playerBodies[key].quaternion);
     }
 
     // Updates controls
@@ -309,7 +439,7 @@ function runGameLoop() {
     requestAnimationFrame( runGameLoop );
 }
 
-},{"./events":17,"./util/get-pointer":18,"bragi-browser":2}],2:[function(require,module,exports){
+},{"./create-body-and-mesh":19,"./dev-input":20,"./events":21,"./socket-io":22,"./util/get-pointer":23,"./util/pointer-lock-controls":24,"bragi-browser":2,"uuid":18}],2:[function(require,module,exports){
 /* =========================================================================
  * Bragi (Javascript Logger - Browser)
  *
@@ -13818,6 +13948,342 @@ function hasOwnProperty(obj, prop) {
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
 },{}],17:[function(require,module,exports){
+(function (global){
+
+var rng;
+
+if (global.crypto && crypto.getRandomValues) {
+  // WHATWG crypto-based RNG - http://wiki.whatwg.org/wiki/Crypto
+  // Moderately fast, high quality
+  var _rnds8 = new Uint8Array(16);
+  rng = function whatwgRNG() {
+    crypto.getRandomValues(_rnds8);
+    return _rnds8;
+  };
+}
+
+if (!rng) {
+  // Math.random()-based (RNG)
+  //
+  // If all else fails, use Math.random().  It's fast, but is of unspecified
+  // quality.
+  var  _rnds = new Array(16);
+  rng = function() {
+    for (var i = 0, r; i < 16; i++) {
+      if ((i & 0x03) === 0) r = Math.random() * 0x100000000;
+      _rnds[i] = r >>> ((i & 0x03) << 3) & 0xff;
+    }
+
+    return _rnds;
+  };
+}
+
+module.exports = rng;
+
+
+}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{}],18:[function(require,module,exports){
+//     uuid.js
+//
+//     Copyright (c) 2010-2012 Robert Kieffer
+//     MIT License - http://opensource.org/licenses/mit-license.php
+
+// Unique ID creation requires a high quality random # generator.  We feature
+// detect to determine the best RNG source, normalizing to a function that
+// returns 128-bits of randomness, since that's what's usually required
+var _rng = require('./rng');
+
+// Maps for number <-> hex string conversion
+var _byteToHex = [];
+var _hexToByte = {};
+for (var i = 0; i < 256; i++) {
+  _byteToHex[i] = (i + 0x100).toString(16).substr(1);
+  _hexToByte[_byteToHex[i]] = i;
+}
+
+// **`parse()` - Parse a UUID into it's component bytes**
+function parse(s, buf, offset) {
+  var i = (buf && offset) || 0, ii = 0;
+
+  buf = buf || [];
+  s.toLowerCase().replace(/[0-9a-f]{2}/g, function(oct) {
+    if (ii < 16) { // Don't overflow!
+      buf[i + ii++] = _hexToByte[oct];
+    }
+  });
+
+  // Zero out remaining bytes if string was short
+  while (ii < 16) {
+    buf[i + ii++] = 0;
+  }
+
+  return buf;
+}
+
+// **`unparse()` - Convert UUID byte array (ala parse()) into a string**
+function unparse(buf, offset) {
+  var i = offset || 0, bth = _byteToHex;
+  return  bth[buf[i++]] + bth[buf[i++]] +
+          bth[buf[i++]] + bth[buf[i++]] + '-' +
+          bth[buf[i++]] + bth[buf[i++]] + '-' +
+          bth[buf[i++]] + bth[buf[i++]] + '-' +
+          bth[buf[i++]] + bth[buf[i++]] + '-' +
+          bth[buf[i++]] + bth[buf[i++]] +
+          bth[buf[i++]] + bth[buf[i++]] +
+          bth[buf[i++]] + bth[buf[i++]];
+}
+
+// **`v1()` - Generate time-based UUID**
+//
+// Inspired by https://github.com/LiosK/UUID.js
+// and http://docs.python.org/library/uuid.html
+
+// random #'s we need to init node and clockseq
+var _seedBytes = _rng();
+
+// Per 4.5, create and 48-bit node id, (47 random bits + multicast bit = 1)
+var _nodeId = [
+  _seedBytes[0] | 0x01,
+  _seedBytes[1], _seedBytes[2], _seedBytes[3], _seedBytes[4], _seedBytes[5]
+];
+
+// Per 4.2.2, randomize (14 bit) clockseq
+var _clockseq = (_seedBytes[6] << 8 | _seedBytes[7]) & 0x3fff;
+
+// Previous uuid creation time
+var _lastMSecs = 0, _lastNSecs = 0;
+
+// See https://github.com/broofa/node-uuid for API details
+function v1(options, buf, offset) {
+  var i = buf && offset || 0;
+  var b = buf || [];
+
+  options = options || {};
+
+  var clockseq = options.clockseq !== undefined ? options.clockseq : _clockseq;
+
+  // UUID timestamps are 100 nano-second units since the Gregorian epoch,
+  // (1582-10-15 00:00).  JSNumbers aren't precise enough for this, so
+  // time is handled internally as 'msecs' (integer milliseconds) and 'nsecs'
+  // (100-nanoseconds offset from msecs) since unix epoch, 1970-01-01 00:00.
+  var msecs = options.msecs !== undefined ? options.msecs : new Date().getTime();
+
+  // Per 4.2.1.2, use count of uuid's generated during the current clock
+  // cycle to simulate higher resolution clock
+  var nsecs = options.nsecs !== undefined ? options.nsecs : _lastNSecs + 1;
+
+  // Time since last uuid creation (in msecs)
+  var dt = (msecs - _lastMSecs) + (nsecs - _lastNSecs)/10000;
+
+  // Per 4.2.1.2, Bump clockseq on clock regression
+  if (dt < 0 && options.clockseq === undefined) {
+    clockseq = clockseq + 1 & 0x3fff;
+  }
+
+  // Reset nsecs if clock regresses (new clockseq) or we've moved onto a new
+  // time interval
+  if ((dt < 0 || msecs > _lastMSecs) && options.nsecs === undefined) {
+    nsecs = 0;
+  }
+
+  // Per 4.2.1.2 Throw error if too many uuids are requested
+  if (nsecs >= 10000) {
+    throw new Error('uuid.v1(): Can\'t create more than 10M uuids/sec');
+  }
+
+  _lastMSecs = msecs;
+  _lastNSecs = nsecs;
+  _clockseq = clockseq;
+
+  // Per 4.1.4 - Convert from unix epoch to Gregorian epoch
+  msecs += 12219292800000;
+
+  // `time_low`
+  var tl = ((msecs & 0xfffffff) * 10000 + nsecs) % 0x100000000;
+  b[i++] = tl >>> 24 & 0xff;
+  b[i++] = tl >>> 16 & 0xff;
+  b[i++] = tl >>> 8 & 0xff;
+  b[i++] = tl & 0xff;
+
+  // `time_mid`
+  var tmh = (msecs / 0x100000000 * 10000) & 0xfffffff;
+  b[i++] = tmh >>> 8 & 0xff;
+  b[i++] = tmh & 0xff;
+
+  // `time_high_and_version`
+  b[i++] = tmh >>> 24 & 0xf | 0x10; // include version
+  b[i++] = tmh >>> 16 & 0xff;
+
+  // `clock_seq_hi_and_reserved` (Per 4.2.2 - include variant)
+  b[i++] = clockseq >>> 8 | 0x80;
+
+  // `clock_seq_low`
+  b[i++] = clockseq & 0xff;
+
+  // `node`
+  var node = options.node || _nodeId;
+  for (var n = 0; n < 6; n++) {
+    b[i + n] = node[n];
+  }
+
+  return buf ? buf : unparse(b);
+}
+
+// **`v4()` - Generate random UUID**
+
+// See https://github.com/broofa/node-uuid for API details
+function v4(options, buf, offset) {
+  // Deprecated - 'format' argument, as supported in v1.2
+  var i = buf && offset || 0;
+
+  if (typeof(options) == 'string') {
+    buf = options == 'binary' ? new Array(16) : null;
+    options = null;
+  }
+  options = options || {};
+
+  var rnds = options.random || (options.rng || _rng)();
+
+  // Per 4.4, set bits for version and `clock_seq_hi_and_reserved`
+  rnds[6] = (rnds[6] & 0x0f) | 0x40;
+  rnds[8] = (rnds[8] & 0x3f) | 0x80;
+
+  // Copy bytes to buffer, if provided
+  if (buf) {
+    for (var ii = 0; ii < 16; ii++) {
+      buf[i + ii] = rnds[ii];
+    }
+  }
+
+  return buf || unparse(rnds);
+}
+
+// Export public API
+var uuid = v4;
+uuid.v1 = v1;
+uuid.v4 = v4;
+uuid.parse = parse;
+uuid.unparse = unparse;
+
+module.exports = uuid;
+
+},{"./rng":17}],19:[function(require,module,exports){
+/* ==========================================================================
+ * create-player.js
+ * 
+ *  Utility for create player geom
+ *
+ * ========================================================================== */
+var logger = require('bragi-browser');
+var events = require('./events');
+
+// =========================================================================
+// 
+// Create Box
+//
+// =========================================================================
+function createBox( options ){
+    options = options || {};
+
+    var x = options.x || (Math.random()-0.5)*20;
+    var y = options.y || 1 + (Math.random()-0.5)*1;
+    var z = options.z || (Math.random()-0.5)*20;
+
+    var halfExtents = options.size || new CANNON.Vec3(1,0.5,1);
+
+    var boxShape = new CANNON.Box(halfExtents);
+    var boxGeometry = new THREE.BoxGeometry(halfExtents.x*2,halfExtents.y*2,halfExtents.z*2);
+
+    var woodTexture = THREE.ImageUtils.loadTexture( "/static/textures/wood.jpg" );
+    woodTexture.wrapS = woodTexture.wrapT = THREE.RepeatWrapping;
+    woodTexture.repeat.set( 1, 1 );
+    var woodMaterial = new THREE.MeshLambertMaterial( { 
+        shading: THREE.FlatShading,
+        color: 0x7F7163, 
+        map: woodTexture 
+    });
+
+    var boxBody = new CANNON.Body({ mass: options.mass || 5 });
+    boxBody.addShape(boxShape);
+
+    var boxMesh = new THREE.Mesh( boxGeometry, woodMaterial );
+    boxBody.position.set(x,y,z);
+    boxMesh.position.set(x,y,z);
+
+    boxMesh.castShadow = true;
+    boxMesh.receiveShadow = true;
+
+    return { body: boxBody, mesh: boxMesh };
+
+}
+module.exports.createBox = createBox;
+
+// =========================================================================
+// 
+// Create player
+//
+// =========================================================================
+function createPlayer( options ){
+    options = options || {};
+
+    var x = options.x || (Math.random()-0.5)*20;
+    var y = options.y || 1 + (Math.random()-0.5)*1;
+    var z = options.z || (Math.random()-0.5)*20;
+
+    var halfExtents = options.size || new CANNON.Vec3(1,0.5,1);
+
+    var boxShape = new CANNON.Box(halfExtents);
+    var boxGeometry = new THREE.BoxGeometry(halfExtents.x*2,halfExtents.y*2,halfExtents.z*2);
+
+    var woodTexture = THREE.ImageUtils.loadTexture( "/static/textures/wood.jpg" );
+    woodTexture.wrapS = woodTexture.wrapT = THREE.RepeatWrapping;
+    woodTexture.repeat.set( 1, 1 );
+    var woodMaterial = new THREE.MeshLambertMaterial( { 
+        shading: THREE.FlatShading,
+        color: 0xffffff, 
+        map: woodTexture 
+    });
+
+    var boxBody = new CANNON.Body({ mass: options.mass || 5 });
+    boxBody.addShape(boxShape);
+
+    var boxMesh = new THREE.Mesh( boxGeometry, woodMaterial );
+    boxBody.position.set(x,y,z);
+    boxMesh.position.set(x,y,z);
+
+    boxMesh.castShadow = true;
+    boxMesh.receiveShadow = true;
+
+    return { body: boxBody, mesh: boxMesh };
+}
+module.exports.createPlayer = createPlayer;
+
+},{"./events":21,"bragi-browser":2}],20:[function(require,module,exports){
+/* ==========================================================================
+ * dev-input.js
+ * 
+ *  Handle key input for dev command
+ *
+ * ========================================================================== */
+var logger = require('bragi-browser');
+var events = require('./events');
+
+module.exports = function setupDevInput(){
+    function onkeydown( event ) {
+        switch( event.keyCode ) {
+            case 80:
+                logger.log('dev-input',
+                'adding new entity');
+
+                events.emit('game:player:add');
+                break;
+        }
+    }
+
+    document.addEventListener( 'keydown', onkeydown, false );
+};
+
+},{"./events":21,"bragi-browser":2}],21:[function(require,module,exports){
 /* ==========================================================================
  * events.js
  * 
@@ -13828,9 +14294,102 @@ function hasOwnProperty(obj, prop) {
 var EventEmitter = require('events').EventEmitter;
 var events = new EventEmitter();
 
+// expose globally for testing
+window.EVENTS = events;
+
 module.exports = events;
 
-},{"events":11}],18:[function(require,module,exports){
+},{"events":11}],22:[function(require,module,exports){
+/* ==========================================================================
+ * socket-io.js
+ * 
+ *  Socket IO config
+ *
+ * ========================================================================== */
+var logger = require('bragi-browser');
+var events = require('./events');
+
+function setupSocket( id, options ){
+    var socket = io({bla: true});
+    options = options || {};
+    logger.log('socket-io:setupSocket', 'called with %O', options);
+
+    // initial connection
+    socket.emit('game:player:connected', {
+        id: id, position: options.position
+    });
+
+    // ----------------------------------
+    //
+    // SOCKET EVENT LISTENERS
+    //
+    // ----------------------------------
+    // CONNECT
+    socket.on('broadcast:game:player:connected', function(options){ 
+        logger.log('socket-io:game:player:connected', 
+        'got message %O', options);
+
+        if(options.id == id){ 
+            logger.log('warn:socket-io:game:player:connected', 'ignoring own message');
+            return; 
+        }
+
+        // otherwise, create an object for the player
+        events.emit('game:player:add', {
+            id: options.id,
+            position: options.position
+        });
+    });
+
+    // OTHER player movement
+    socket.on('broadcast:game:player:movement', function(options){
+        options = options || {};
+
+        if(options.id == id){ 
+            logger.log('warn:socket-io:game:player:movement', 'ignoring own message');
+            return; 
+        }
+
+        logger.log('socket-io:game:player:movement', 
+        'got message %O', options);
+
+        // when player position event is emitted, send message to socketio
+        events.emit('game:player:movement', {
+            id: options.id,
+            position: options.position
+        });
+    });
+
+    // DISCONNECT
+    socket.on('broadcast:game:player:disconnected', function(options){ 
+        logger.log('socket-io:game:player:disconnected', 
+        'got message %O', options);
+
+        // otherwise, create an object for the player
+        events.emit('game:player:disconnected', { id: options.id });
+    });
+
+    // ----------------------------------
+    //
+    // GAME EVENT LISTENERS (which trigger socket emits)
+    // FOR Own triggers
+    //
+    // ----------------------------------
+    var lastMovementEmit = Date.now();
+
+    events.on('self:game:player:movement', function(options){
+        // when player position event is emitted, send message to socketio
+        socket.emit('game:player:movement', {
+            id: id,
+            position: options.position
+        });
+        lastMovementEmit = Date.now();
+    });
+
+}
+module.exports = setupSocket;
+
+},{"./events":21,"bragi-browser":2}],23:[function(require,module,exports){
 /* ==========================================================================
  * get-pointer.js
  * 
@@ -13957,4 +14516,222 @@ module.exports = function getPointer(){
     });
 };
 
-},{"../events":17,"bragi-browser":2,"lodash":16}]},{},[1]);
+},{"../events":21,"bragi-browser":2,"lodash":16}],24:[function(require,module,exports){
+// ======================================
+//
+// Player controller settings
+//
+// ======================================
+var logger = require('bragi-browser'); 
+var events = require('../events');
+
+// ======================================
+// Pointer lock controls
+// ======================================
+var PointerLockControls = function ( camera, cannonBody, options ) {
+    options = options || {};
+    
+    // BASE options
+    options.eyeYPos = options.eyeYPos || 3;
+    options.velocityFactor = options.velocityFactor || 0.2;
+    options.jumpVelocity = options.jumpVelocity || 20;
+
+    var base_eyeYPos = options.eyeYPos;
+    var base_velocityFactor = options.velocityFactor;
+    var base_jumpVelocity = options.jumpVelocity;
+
+    var eyeYPos = options.eyeYPos;
+    var velocityFactor = options.velocityFactor;
+    var jumpVelocity = options.jumpVelocity;
+
+    // Listen for event to change player speed
+    events.on('playerControls:updateOptions', function(newOptions){
+        eyeYPos = newOptions.eyeYPos || eyeYPos;
+        velocityFactor = newOptions.velocityFactor || velocityFactor;
+        jumpVelocity = newOptions.jumpVelocity || jumpVelocity;
+    });
+
+    var scope = this;
+
+    var pitchObject = new THREE.Object3D();
+    pitchObject.add( camera );
+
+    var yawObject = new THREE.Object3D();
+    yawObject.position.y = 2;
+    yawObject.add( pitchObject );
+
+    var quat = new THREE.Quaternion();
+
+    var moveForward = false;
+    var moveBackward = false;
+    var moveLeft = false;
+    var moveRight = false;
+
+    var canJump = false;
+
+    var contactNormal = new CANNON.Vec3(); // Normal in the contact, pointing *out* of whatever the player touched
+    var upAxis = new CANNON.Vec3(0,1,0);
+    cannonBody.addEventListener("collide",function(e){
+        var contact = e.contact;
+
+        // contact.bi and contact.bj are the colliding bodies, and contact.ni is the collision normal.
+        // We do not yet know which one is which! Let's check.
+        if(contact.bi.id == cannonBody.id)  // bi is the player body, flip the contact normal
+            contact.ni.negate(contactNormal);
+        else
+            contactNormal.copy(contact.ni); // bi is something else. Keep the normal as it is
+
+        // If contactNormal.dot(upAxis) is between 0 and 1, we know that the contact normal is somewhat in the up direction.
+        if(contactNormal.dot(upAxis) > 0.5) // Use a "good" threshold value between 0 and 1 here!
+            canJump = true;
+    });
+
+    var velocity = cannonBody.velocity;
+
+    var PI_2 = Math.PI / 2;
+
+    var onMouseMove = function ( event ) {
+
+        if ( scope.enabled === false ) return;
+
+        var movementX = event.movementX || event.mozMovementX || event.webkitMovementX || 0;
+        var movementY = event.movementY || event.mozMovementY || event.webkitMovementY || 0;
+
+        yawObject.rotation.y -= movementX * 0.002;
+        pitchObject.rotation.x -= movementY * 0.002;
+
+        pitchObject.rotation.x = Math.max( - PI_2, Math.min( PI_2, pitchObject.rotation.x ) );
+    };
+
+    var onKeyDown = function ( event ) {
+        logger.log('pointer-lock-controls:keydown', 
+            'key down pressed keycode: ' + event.keyCode);
+
+        switch ( event.keyCode ) {
+            case 16:
+                // Shift
+                velocityFactor = 0.7;
+                break;
+
+            case 38: // up
+            case 87: // w
+                moveForward = true;
+                break;
+
+            case 37: // left
+            case 65: // a
+                moveLeft = true; break;
+
+            case 40: // down
+            case 83: // s
+                moveBackward = true;
+                break;
+
+            case 39: // right
+            case 68: // d
+                moveRight = true;
+                break;
+
+            case 32: // space
+                if ( canJump === true ){
+                    velocity.y = jumpVelocity;
+                }
+                canJump = false;
+                break;
+        }
+
+    };
+
+    var onKeyUp = function ( event ) {
+        logger.log('pointer-lock-controls:keyup', 
+            'key up pressed keycode: ' + event.keyCode);
+
+        switch( event.keyCode ) {
+            case 16:
+                // Shift
+                velocityFactor = base_velocityFactor;
+                break;
+
+            case 38: // up
+            case 87: // w
+                moveForward = false;
+                break;
+
+            case 37: // left
+            case 65: // a
+                moveLeft = false;
+                break;
+
+            case 40: // down
+            case 83: // a
+                moveBackward = false;
+                break;
+
+            case 39: // right
+            case 68: // d
+                moveRight = false;
+                break;
+        }
+
+    };
+
+    document.addEventListener( 'mousemove', onMouseMove, false );
+    document.addEventListener( 'keydown', onKeyDown, false );
+    document.addEventListener( 'keyup', onKeyUp, false );
+
+    this.enabled = false;
+
+    this.getObject = function () {
+        return yawObject;
+    };
+
+    this.getDirection = function(targetVec){
+        targetVec.set(0,0,-1);
+        quat.multiplyVector3(targetVec);
+    };
+
+    // Moves the camera to the Cannon.js object position and adds velocity to the object if the run key is down
+    var inputVelocity = new THREE.Vector3();
+    var euler = new THREE.Euler();
+    this.update = function ( delta ) {
+
+        if ( scope.enabled === false ) return;
+
+        delta *= 0.1;
+
+        inputVelocity.set(0,0,0);
+
+        if ( moveForward ){
+            inputVelocity.z = -velocityFactor * delta;
+        }
+        if ( moveBackward ){
+            inputVelocity.z = velocityFactor * delta;
+        }
+
+        if ( moveLeft ){
+            inputVelocity.x = -velocityFactor * delta;
+        }
+        if ( moveRight ){
+            inputVelocity.x = velocityFactor * delta;
+        }
+
+        // Convert velocity to world coordinates
+        euler.x = pitchObject.rotation.x;
+        euler.y = yawObject.rotation.y;
+        euler.order = "XYZ";
+        quat.setFromEuler(euler);
+        inputVelocity.applyQuaternion(quat);
+        //quat.multiplyVector3(inputVelocity);
+
+        // Add to the object
+        velocity.x += inputVelocity.x;
+        velocity.z += inputVelocity.z;
+
+        yawObject.position.copy(cannonBody.position);
+    };
+};
+THREE.PointerLockControls = PointerLockControls;
+
+module.exports = PointerLockControls;
+
+},{"../events":21,"bragi-browser":2}]},{},[1]);

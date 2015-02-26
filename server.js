@@ -12,6 +12,8 @@ var nconf = require('nconf');
 require('./conf/configure')();
 
 var numCPUs = require('os').cpus().length;
+// NOTE: TODO: This must be 1 until we share memory (e.g., use redis / pubsub)
+numCPUs = 1;
 
 var logger = require('bragi');
 require('./conf/configure-bragi')();
